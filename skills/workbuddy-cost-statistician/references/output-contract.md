@@ -38,7 +38,7 @@ Agent应阅读JSON后补充有依据的观察，必要时通过 report.py 的 --
 
 ## 经证据核实的关联和页面证据
 
-题目默认仅在去除空白后作完整匹配。WorkBuddy另去除末尾场景标签，但把标签保留为条件。改写的题目不自动模糊匹配。可用 --mapping 提供JSON数组，每项包含 session、user_message、task_id，以及 role=new 或 continue；映射由Agent读取实际消息与题目资料核实后生成，并保留证据；不能可靠关联时记录排除原因，不向用户追问或猜测归属。
+题目默认仅在去除空白后作完整匹配。WorkBuddy另处理前后带引号的场景标签和旧式尾部场景说明；附件引用去除后与完整题目唯一匹配时自动关联，标签及附件仍保留为条件。自动压缩和恢复不拆分测试或丢弃后续用量。改写的题目不自动模糊匹配。可用 --mapping 提供JSON数组，每项包含 session、user_message、task_id，以及 role=new 或 continue；映射由Agent读取实际消息与题目资料核实后生成，并保留证据；不能可靠关联时记录排除原因，不向用户追问或猜测归属。
 
 页面证据通过 --observations 提供JSON数组。每项以 run_id、session、user_message 中一个或多个字段唯一定位测试，包含 page_status、page_response、evidence；实际确认拒答时可加 outcome=refused。证据来源必须明确，例如用户确认的页面回复。不能把页面显示已完成直接当作已交付，也不能把某题的一次观察套用到其他次。
 

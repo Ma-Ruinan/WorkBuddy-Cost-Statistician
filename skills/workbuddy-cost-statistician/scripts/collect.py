@@ -3,7 +3,7 @@ import collections
 import json
 from pathlib import Path
 import re
-from common import DataError,assign_users,date_selected,in_scope,iso,number,segment
+from common import DataError,assign_users,date_selected,in_scope,iso,number,segment,scene_parts,task_match
 from agent_tree import enrich
 
 PRODUCT='WorkBuddy'
@@ -34,35 +34,69 @@ def user_records(rows):
     for r in rows:
         if r.get('type')=='message' and r.get('role')=='user':
             pd=r.get('providerData') or {}
-            if pd.get('isMeta') is True or pd.get('startsNewUserRequest') is False:continue
+            if pd.get('isMeta') is True or pd.get('startsNewUserRequest') is False or pd.get('isCompactInternal') is True:continue
             text='\n'.join(x.get('text','') for x in r.get('content',[]) if isinstance(x,dict))
             query=re.search(r'<user_query>(.*?)</user_query>',text,re.S)
             result.append(dict(id=r['id'],time=r['timestamp'],text=query.group(1) if query else text,raw=r))
     return result
 
+def log_records(path):
+    """Preserve physical source lines, including embedded newlines in tool output."""
+    text=path.read_text(encoding='utf-8-sig');pos=0;line=1
+    strict=json.JSONDecoder();controls=json.JSONDecoder(strict=False)
+    while pos<len(text):
+        while pos<len(text) and text[pos].isspace():
+            if text[pos]=='\n':line+=1
+            pos+=1
+        if pos==len(text):break
+        start=pos;start_line=line
+        try:
+            try:r,pos=strict.raw_decode(text,pos)
+            except json.JSONDecodeError as exc:
+                if not exc.msg.startswith('Invalid control character'):raise
+                r,pos=controls.raw_decode(text,pos)
+        except json.JSONDecodeError as exc:
+            raise DataError('无法解析日志：'+str(path)+'#JSONL:'+str(exc.lineno)+' '+exc.msg) from exc
+        if not isinstance(r,dict):raise DataError('日志记录不是对象：'+str(path)+'#JSONL:'+str(start_line))
+        r['_line']=start_line;line+=text.count('\n',start,pos);yield r
+
+
+def tree_root(path):
+    if 'subagents' not in path.parts:return str(path.resolve())
+    folder=Path(*path.parts[:path.parts.index('subagents')])
+    return str((folder.parent/(folder.name+'.jsonl')).resolve())
+
+
 class WorkBuddyTree:
-    def __init__(self,source,tz):
+    def __init__(self,source,tz,workspace=None,sessions=None):
         self.tz=tz;self.nodes={};self.rows={};self.graph=collections.defaultdict(list);self.times=collections.defaultdict(list)
         paths=[source,*sorted((source.parent/source.stem/'subagents').rglob('*.jsonl'))] if source.is_file() else sorted(source.rglob('*.jsonl'))
         if not paths:raise DataError('未找到会话JSONL：'+str(source))
+        if workspace is not None:
+            selected=set()
+            for path in paths:
+                if 'subagents' in path.parts:continue
+                directory=session=None
+                for r in log_records(path):
+                    directory=directory or r.get('cwd');session=session or r.get('sessionId')
+                    if directory and session:break
+                if in_scope(directory,workspace) and (not sessions or (session or path.stem) in sessions):selected.add(tree_root(path))
+            paths=[p for p in paths if tree_root(p) in selected]
         aliases={};orphans=[]
         for path in paths:
-            rows=[]
-            for lineno,line in enumerate(path.read_text(encoding='utf-8-sig').splitlines(),1):
-                if line.strip():
-                    r=json.loads(line);r['_line']=lineno;rows.append(r)
-            key=str(path.resolve());users=user_records(rows)
+            rows=list(log_records(path))
+            key=str(path.resolve())
             session=next((r.get('sessionId') for r in rows if r.get('sessionId')),None)
             directory=next((r.get('cwd') for r in rows if r.get('cwd')),'')
             child='subagents' in path.parts
             if child:
-                at=path.parts.index('subagents');folder=Path(*path.parts[:at]);tree_root=str((folder.parent/(folder.name+'.jsonl')).resolve())
-            else:tree_root=key
+                root_key=tree_root(path)
+            else:root_key=key
             self.nodes[key]=dict(session=session or path.stem,source=key,directory=directory,
-                created=min((r.get('timestamp',0) for r in rows),default=0),child=child,tree_root=tree_root)
+                created=min((r.get('timestamp',0) for r in rows),default=0),child=child,tree_root=root_key)
             self.rows[key]=rows
             for alias in {path.stem,session} - {None}:
-                alias_key=(tree_root,alias)
+                alias_key=(root_key,alias)
                 if alias_key in aliases and aliases[alias_key]!=key:raise DataError('子日志标识对应多个文件：'+str(alias))
                 aliases[alias_key]=key
             if child:orphans.append(key)
@@ -93,9 +127,9 @@ class WorkBuddyTree:
                 args=r.get('arguments') or {}
                 if isinstance(args,str):args=json.loads(args)
                 if args.get('type')!='message':continue
-                recipient=args.get('recipient');tree_root=self.nodes[node]['tree_root']
-                known=[(time,target) for time,target in roles[(tree_root,recipient)] if time<=r['timestamp']]
-                target=max(known,key=lambda x:x[0])[1] if known else aliases.get((tree_root,recipient))
+                recipient=args.get('recipient');root_key=self.nodes[node]['tree_root']
+                known=[(time,target) for time,target in roles[(root_key,recipient)] if time<=r['timestamp']]
+                target=max(known,key=lambda x:x[0])[1] if known else aliases.get((root_key,recipient))
                 # Replies to the parent do not launch another child execution.
                 if target==node or (target in self.nodes and not self.nodes[target]['child']):continue
                 if not target and self.nodes[node]['child']:continue
@@ -154,28 +188,39 @@ class WorkBuddyTree:
             if code is not None and (not isinstance(code,int) or isinstance(code,bool)):raise DataError('工具退出码类型变化：'+cid)
             status=r.get('status');failed=status in ('error','failed') or bool(raw.get('is_error')) or bool(tr.get('isError')) or code not in (None,0)
             msg=str(raw.get('error') or tr.get('content') or r.get('output','')) if failed else ''
+            effective=call['name']
+            if effective=='DeferExecuteTool':
+                args=call.get('arguments') or {};args=json.loads(args) if isinstance(args,str) else args
+                effective=args.get('toolName',effective)
             tools.append(dict(id=cid,name=call['name'],status=status,exit_code=code,failed=failed,
+                effective_name=effective,is_search=effective in ('WebSearch','domain_search'),
                 time=iso(r.get('timestamp',call['timestamp']),self.tz),message=msg[:1600],message_truncated=len(msg)>1600,
                 evidence=node+'#JSONL:'+str(r.get('_line',call['_line'])),
                 _identity='WorkBuddy#call:'+cid+'#time:'+str(call['timestamp']),_time_ms=call['timestamp'],agent_session=info['session'],result_complete=bool(r) and status in ('completed','error','failed')))
             if call['name']=='present_files' and status=='completed' and not failed:deliveries.append(dict(id=cid,input=call.get('arguments')))
         text='\n'.join(x.get('text','') for x in finished[-1].get('content',[]) if isinstance(x,dict)) if finished else ''
         user_row=next((u for u in user_records(self.rows[node]) if u['id']==user),None)
-        scene=re.search(r'@scene#\d+:.*',user_row['text'],re.S) if user_row else None
+        scene=scene_parts(user_row['text'])[1] if user_row else None
+        attachments=re.findall(r'@"([^"\r\n]+)"',user_row['text']) if user_row else []
+        conditions='\n'.join(([scene] if scene else [])+['附件：'+p for p in attachments]) or None
         value=segment(PRODUCT,task,root,kind,user,info['session'],start,end,info['directory'],node,
             [u['value'] for u in usages.values()],tools,deliveries,'WebSearch',self.tz,
-            extra=scene.group(0) if scene else None,final_text=text,errors_complete=all(t['result_complete'] for t in tools))
+            extra=conditions,final_text=text,errors_complete=all(t['result_complete'] for t in tools))
         value['_node']=node;value['_until']=until
         assistants=[r for r in rr if r.get('type')=='message' and r.get('role')=='assistant']
         value['_terminal']=bool(finished) and (not assistants or assistants[-1].get('status')=='completed') and all(t['result_complete'] for t in tools)
         return value
 
 def collect(source,tasks,args,mapping,tz):
-    store=WorkBuddyTree(source,tz);excluded=[];segments=[]
+    store=WorkBuddyTree(source,tz,args.workspace,args.session);excluded=[];segments=[]
     for node,info in store.nodes.items():
         if info['child']:continue
         if not in_scope(info['directory'],args.workspace) or (args.session and info['session'] not in args.session):continue
         users=user_records(store.rows[node])
+        for user in users:
+            if task_match(user['text'],tasks,strip_scene=True):continue
+            candidate=re.sub(r'@"[^"\r\n]+"','',user['text'])
+            if candidate!=user['text'] and task_match(candidate,tasks,strip_scene=True):user['text']=candidate
         for user,task,root,kind,until in assign_users(users,info['session'],tasks,mapping,excluded,node,strip_scene=True):
             if not date_selected(next(u['time'] for u in users if u['id']==root),args,tz):continue
             segments.append(store.piece(node,user['time'],until,task,root,kind,user['id']))

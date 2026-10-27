@@ -99,8 +99,18 @@ def in_scope(directory, roots):
     return any(value == key(r) or value.startswith(key(r) + '/') for r in roots)
 
 
+def scene_parts(text):
+    """Quoted scene labels can precede a question; legacy instructions trail it."""
+    labels=[]
+    def remove(match):
+        labels.append(match.group(0));return ''
+    pure=re.sub(r'@scene#\d+:\s*\\?"[^"]*"',remove,text)
+    pure=re.sub(r'\s+@scene#\d+:.*$',remove,pure,flags=re.S)
+    return pure.strip(),'\n'.join(labels) or None
+
+
 def task_match(text, tasks, strip_scene=False):
-    pure = re.sub(r'\s*@scene#\d+:.*$', '', text, flags=re.S) if strip_scene else text
+    pure = scene_parts(text)[0] if strip_scene else text
     hits = [t['id'] for t in tasks if norm(t['prompt']) == norm(pure)]
     if len(hits) > 1:
         raise DataError('同一用户消息匹配多道题')
@@ -114,7 +124,8 @@ def assign_users(users, session, tasks, mapping, excluded, source, strip_scene=F
         manual = mapping.get((session, u['id']))
         matched = manual['task_id'] if manual else task_match(u['text'], tasks, strip_scene)
         role = manual.get('role', 'new') if manual else None
-        continuation = role == 'continue' or (not matched and norm(u['text']).lower() in CONTINUE)
+        continuation_text=scene_parts(u['text'])[0] if strip_scene else u['text']
+        continuation = role == 'continue' or (not matched and norm(continuation_text).lower() in CONTINUE)
         if role == 'continue' and not root:
             raise DataError('人工映射为继续，但源中没有所属的首次提交')
         if matched and not continuation:
@@ -195,7 +206,6 @@ def segment(product, task, root, kind, user, session, start, end, directory, sou
             usage, tools, deliveries, search_name, tz, retries=None, extra=None, final_text='', errors_complete=True):
     if end is not None and end < start:
         raise DataError('结束时间早于开始时间：' + session)
-    counts = collections.Counter(x['name'] for x in tools)
     errs = [x for x in tools if x['failed']]
     inp = sum_known(x['input'] for x in usage)
     out = sum_known(x['output'] for x in usage)
@@ -207,7 +217,7 @@ def segment(product, task, root, kind, user, session, start, end, directory, sou
              'input_tokens': inp, 'output_tokens': out,
              'cache_rate': cache/inp if inp and cache is not None else None,
              'tool_calls': len(tools), 'tool_errors': len(errs) if errors_complete else None,
-             'search_calls': counts[search_name], 'artifact_count': sum(f['exists'] for f in files)}
+             'search_calls': sum(x.get('is_search',x['name']==search_name) for x in tools), 'artifact_count': sum(f['exists'] for f in files)}
     values = dict(known)
     if not complete:
         for k in METRICS[:-1]:

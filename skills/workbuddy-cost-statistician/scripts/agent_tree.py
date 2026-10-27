@@ -11,7 +11,7 @@ def observed(usage, tools, search):
             'cache_rate':cache/inp if inp and cache is not None else None,
             'tool_calls':len(tools),
             'tool_errors':sum(bool(x['failed']) for x in tools) if all(x.get('result_complete',True) for x in tools) else None,
-            'search_calls':sum(x['name']==search for x in tools)},cache
+            'search_calls':sum(x.get('is_search',x['name']==search) for x in tools)},cache
 
 
 def enrich(segments, store, search):
@@ -88,7 +88,7 @@ def enrich(segments, store, search):
 
         def add(kind,item,bucket):
             token=item['_identity']; prior=seen[kind].get(token)
-            fields=('input','output','cache','calls') if kind=='usage' else ('name','failed','status','exit_code')
+            fields=('input','output','cache','calls') if kind=='usage' else ('name','effective_name','failed','status','exit_code','is_search')
             signature=tuple(item.get(k) for k in fields)
             if prior is not None:
                 if prior!=signature:raise DataError('同一执行标识记录不一致：'+token)
