@@ -258,8 +258,6 @@ def collect(source,tasks,args,mapping,tz):
             s['warnings'].append('未找到本段运行用量日志；辅助模型成本可能未覆盖')
         if any(any(sid in line for sid in sessions) for line,_ in store.runtime.issues):
             s['warnings'].append('部分关联运行用量记录无法解析；成本覆盖不完整')
-        if any(u.get('cost_kind') and u['cache'] is None for u in s['usage_records']):
-            s['warnings'].append('辅助模型记录未提供缓存量，本次缓存命中率留空')
     included={e['node'] for s in segments for e in s['agent_executions']}
     for node,info in store.nodes.items():
         if info['child'] and node not in included:excluded.append(dict(session=info['session'],source=node,reason='未关联到所选父任务的子日志',time_ms=info['created']))

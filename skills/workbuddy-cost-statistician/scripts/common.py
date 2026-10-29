@@ -202,6 +202,11 @@ def delivery_files(deliveries, directory):
     return list(paths.values())
 
 
+def cache_basis(usage):
+    rows = [u for u in usage if not u.get('cost_kind')]
+    return sum_known(u['input'] for u in rows), sum_known(u['cache'] for u in rows)
+
+
 def segment(product, task, root, kind, user, session, start, end, directory, source,
             usage, tools, deliveries, search_name, tz, retries=None, extra=None, final_text='', errors_complete=True):
     if end is not None and end < start:
@@ -209,13 +214,13 @@ def segment(product, task, root, kind, user, session, start, end, directory, sou
     errs = [x for x in tools if x['failed']]
     inp = sum_known(x['input'] for x in usage)
     out = sum_known(x['output'] for x in usage)
-    cache = sum_known(x['cache'] for x in usage)
+    cache_input, cache = cache_basis(usage)
     calls = sum_known(x['calls'] for x in usage)
     files = delivery_files(deliveries, directory)
     complete = end is not None
     known = {'seconds': (end-start)/1000 if complete else None, 'llm_calls': calls,
              'input_tokens': inp, 'output_tokens': out,
-             'cache_rate': cache/inp if inp and cache is not None else None,
+             'cache_rate': cache/cache_input if cache_input and cache is not None else None,
              'tool_calls': len(tools), 'tool_errors': len(errs) if errors_complete else None,
              'search_calls': sum(x.get('is_search',x['name']==search_name) for x in tools), 'artifact_count': sum(f['exists'] for f in files)}
     values = dict(known)
@@ -249,7 +254,8 @@ def assemble(product, tasks, segments, excluded, args, tz):
         r['values'] = {k: sum_known(s['values'][k] for s in ss) for k in METRICS}
         r['values']['seconds'] = (last['end_ms']-r['start_ms'])/1000 if last['end_ms'] is not None else None
         r['cache_tokens'] = sum_known(s['cache_tokens'] for s in ss)
-        r['values']['cache_rate'] = r['cache_tokens']/r['values']['input_tokens'] if r['values']['input_tokens'] and r['cache_tokens'] is not None else None
+        r['cache_input_tokens'] = cache_basis([u for s in ss for u in s['usage_records']])[0]
+        r['values']['cache_rate'] = r['cache_tokens']/r['cache_input_tokens'] if r['cache_input_tokens'] and r['cache_tokens'] is not None else None
         r['files'] = list({f['path'].casefold(): f for s in ss for f in s['files']}.values())
         r['values']['artifact_count'] = sum(f['exists'] for f in r['files'])
         for key in ('usage_records', 'tools', 'errors', 'warnings'):
@@ -275,8 +281,7 @@ def assemble(product, tasks, segments, excluded, args, tz):
             r['observed_partial'] = {k: sum_known((s.get('observed_partial') or s['values'])[k] for s in ss) for k in METRICS}
             r['observed_partial']['seconds'] = (last['end_ms']-r['start_ms'])/1000 if last['end_ms'] is not None else None
             r['observed_partial']['artifact_count'] = sum(f['exists'] for f in r['files'])
-            partial_input = sum_known(u['input'] for u in r['usage_records'])
-            partial_cache = sum_known(u['cache'] for u in r['usage_records'])
+            partial_input, partial_cache = cache_basis(r['usage_records'])
             r['observed_partial']['cache_rate'] = partial_cache/partial_input if partial_input and partial_cache is not None else None
         r['task_name'] = next(t['name'] for t in tasks if t['id'] == r['task'])
         runs.append(r)
@@ -312,7 +317,7 @@ def assemble(product, tasks, segments, excluded, args, tz):
         means[key] = {'by_task': by_task, 'task_n': len(tm), 'run_n': len(vv),
                       'task_mean': statistics.mean(tm) if tm else None, 'run_mean': statistics.mean(vv) if vv else None}
     valid = [r for r in runs if r['cache_tokens'] is not None and r['values']['input_tokens'] is not None]
-    den = sum(r['values']['input_tokens'] for r in valid)
+    den = sum(r['cache_input_tokens'] for r in valid)
     return {'schema_version': '2.0', 'product': product, 'tasks': tasks, 'runs': runs,
             'summary': means, 'pooled_cache_rate': sum(r['cache_tokens'] for r in valid)/den if den else None,
             'excluded': excluded, 'missing_tasks': [t['id'] for t in tasks if not counters[t['id']]]}

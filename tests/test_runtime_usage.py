@@ -28,7 +28,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result['values']['input_tokens'],old['values']['input_tokens']+200)
         self.assertEqual(result['values']['output_tokens'],old['values']['output_tokens']+40)
         self.assertEqual(result['values']['tool_calls'],old['values']['tool_calls'])
-        self.assertIsNone(result['values']['cache_rate'])
+        self.assertEqual(result['values']['cache_rate'],old['values']['cache_rate'])
         # One process logged root and child: title ownership is ambiguous.
         self.assertEqual(result['application_usage'],[])
 

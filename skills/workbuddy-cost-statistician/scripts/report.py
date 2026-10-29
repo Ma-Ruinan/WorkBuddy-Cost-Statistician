@@ -116,7 +116,7 @@ def worksheet(rows,widths,freeze=0,filter_row=None,merges=None):
 
 
 def excel_report(data,path):
-    runs=data['runs'];tasks=data['tasks'];tz=timezone(data['meta']['timezone'])
+    runs=data['runs'];tasks=[t for t in data['tasks'] if any(r['task']==t['id'] for r in runs)];tz=timezone(data['meta']['timezone'])
     headers=[f'{a} {b}' for a,b in zip(LABELS,UNITS)]
     raw=[list(map(lambda s:value(s,1),['测试ID','题号','独立次数','结果状态','开始时间','结束时间',*headers,'缓存读取Token 万','活动耗时 时分秒','段间等待 时分秒','执行分段数','模型记录','附加条件','会话ID','用户消息ID','来源文件','工作目录','交付路径','页面状态','页面回复','页面依据']))]
     segments=[list(map(lambda s:value(s,1),['测试ID','题号','执行段','段落性质','开始时间','结束时间',*headers,'用户消息ID','说明']))]
@@ -141,6 +141,9 @@ def excel_report(data,path):
                     value(v['llm_calls'],3),value(shown('input_tokens',v['input_tokens']),4),value(shown('output_tokens',v['output_tokens']),4),
                     value(a['cache_tokens']/10000 if a['cache_tokens'] is not None else None,4),v['tool_calls'],v['tool_errors'],v['search_calls'],
                     '是' if a['complete'] else '否',a['source'],a.get('directory')])
+    raw[0].append(value('缓存统计输入Token 万',1))
+    for row,run in zip(raw[1:],runs):
+        row.append(value(shown('input_tokens',run.get('cache_input_tokens',run['values']['input_tokens'])),4))
     summary=[[value(data['product']+' 端侧日志统计',2)],[],['逐次与分段耗时保留毫秒，均值显示至秒；Token以万为单位。'],[],[],[value(s,1) for s in ['题号','题目','独立次数',*headers]]]
     limit=max(201,len(raw)+100); rawcols=[col(i) for i in range(7,16)]
     def rg(c):return f"'逐次记录'!${c}$2:${c}${limit}"
@@ -161,7 +164,7 @@ def excel_report(data,path):
             cells.append(value(data['summary'][k][which] if which.endswith('_n') else shown(k,data['summary'][k][which]),3 if which.endswith('_n') else metric_style(k,True),formula))
         summary.append(cells)
     summary.append([])
-    paired_den=f'SUMIFS({rg("I")},{rg("P")},"<>")';paired_num=f'SUMIFS({rg("P")},{rg("I")},"<>")'
+    paired_den=f'SUMIFS({rg("AG")},{rg("P")},"<>")';paired_num=f'SUMIFS({rg("P")},{rg("AG")},"<>")'
     summary.append(['整体缓存命中率 输入量加权',None,None,None,None,None,None,value(data['pooled_cache_rate'],6,f'IF({paired_den}=0,"未取得",{paired_num}/{paired_den})')])
     for note in ['主要对象均值先求同题各次均值，再按题目等权；按次均值另列。',
                  '缺失值不补零；有完整数值的失败执行参与统计。每项列出有效题目数和次数。',
@@ -173,7 +176,7 @@ def excel_report(data,path):
                  ['LLM完成调用数','次','已完成且有用量记录的LLM调用，按消息或请求标识去重；失败重试单列。'],
                  ['输入Token','万','按各次调用累加，含缓存读取及写入；同一上下文在多轮中再次输入仍会计量。'],
                  ['输出Token','万','读取输出字段后累加，1万等于10000 Token。'],
-                 ['缓存命中率','%','缓存读取Token/累计输入Token；各题比例的算术均值为主，输入量加权值另列。'],
+                 ['缓存命中率','%','会话模型缓存读取Token/对应输入Token；各题比例的算术均值为主，输入量加权值另列。'],
                  ['工具调用','次','按工具调用标识去重计数，包括失败调用。'],
                  ['工具错误','次','明确错误状态、内部错误标记或非零命令退出码，按调用标识去重。'],
                  ['搜索调用','次','仅统计本对象专用搜索工具调用，包括报错调用；网页抓取和命令间接联网单列观察。'],
@@ -181,9 +184,9 @@ def excel_report(data,path):
     method=[[value('指标口径与来源',2)],[],[value(x,1) for x in ['指标','单位','口径']],*definitions,[],
             ['对象方法',None,data['meta']['method']],['数据来源',None,data['meta']['source']],['采集时间',None,data['meta']['collected_at']],
             ['时区',None,data['meta']['timezone']],['两次读取一致',None,str(data['meta']['read_twice_equal'])],
-            ['数据快照摘要',None,data['meta']['snapshot_sha256']],['未匹配题目',None,'、'.join(data['missing_tasks']) or '无']]
+            ['数据快照摘要',None,data['meta']['snapshot_sha256']]]
     sheets=[('任务均值',summary,[33,32,12,23,22,21,21,18,18,18,18,18],6,None),
-            ('逐次记录',raw,[25,11,12,42,29,29,25,22,20,20,18,18,18,18,18,22,25,25,14,25,45,45,45,65,65,65,22,45,45,18,18,65],1,1),
+            ('逐次记录',raw,[25,11,12,42,29,29,25,22,20,20,18,18,18,18,18,22,25,25,14,25,45,45,45,65,65,65,22,45,45,18,18,65,22],1,1),
             ('执行分段',segments,[25,11,12,18,29,29,25,22,20,20,18,18,18,18,18,45,48],1,1),
             ('Agent明细',agents,[25,12,12,10,44,60,20,22,22,22,18,18,18,20,80,65],1,1),
             ('口径与来源',method,[27,14,115],0,None)]

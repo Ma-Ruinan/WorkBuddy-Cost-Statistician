@@ -1,14 +1,14 @@
 """Attribute recursive delegated execution to one independent test, then deduplicate."""
 import collections
 import copy
-from common import DataError, METRICS, sum_known, iso
+from common import DataError, METRICS, sum_known, iso, cache_basis
 
 
 def observed(usage, tools, search):
-    inp=sum_known(x['input'] for x in usage); cache=sum_known(x['cache'] for x in usage)
+    inp=sum_known(x['input'] for x in usage); cache_input,cache=cache_basis(usage)
     return {'llm_calls':sum_known(x['calls'] for x in usage),
             'input_tokens':inp,'output_tokens':sum_known(x['output'] for x in usage),
-            'cache_rate':cache/inp if inp and cache is not None else None,
+            'cache_rate':cache/cache_input if cache_input and cache is not None else None,
             'tool_calls':len(tools),
             'tool_errors':sum(bool(x['failed']) for x in tools) if all(x.get('result_complete',True) for x in tools) else None,
             'search_calls':sum(x.get('is_search',x['name']==search) for x in tools)},cache
