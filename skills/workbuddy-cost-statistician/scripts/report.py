@@ -187,6 +187,17 @@ def excel_report(data,path):
             ('执行分段',segments,[25,11,12,18,29,29,25,22,20,20,18,18,18,18,18,45,48],1,1),
             ('Agent明细',agents,[25,12,12,10,44,60,20,22,22,22,18,18,18,20,80,65],1,1),
             ('口径与来源',method,[27,14,115],0,None)]
+    cost_rows=[[value(x,1) for x in ['测试ID','成本类型','调用数','输入Token（万）','输出Token（万）','合计Token（万）']]]
+    for run in runs:
+        task_usage=run['usage_records']; app_usage=run.get('application_usage',[])
+        for label,items in [('任务执行（含压缩和网页处理）',task_usage),('应用辅助（会话标题）',app_usage),('已记录成本合计',task_usage+app_usage)]:
+            inp=sum_known(u['input'] for u in items) if items else 0
+            out=sum_known(u['output'] for u in items) if items else 0
+            cost_rows.append([run['run_id'],label,value(sum_known(u['calls'] for u in items) if items else 0,3),
+                value(inp/10000 if inp is not None else None,4),value(out/10000 if out is not None else None,4),
+                value((inp+out)/10000 if inp is not None and out is not None else None,4)])
+    cost_rows.append(['仅汇总取得的用量；日志缺失见过程报告。会话标题成本不参与任务九项指标均值。'])
+    sheets.append(('成本核对',cost_rows,[30,42,15,24,24,24],1,None))
     content=el(CT,'Types');child(content,CT,'Default',{'Extension':'rels','ContentType':'application/vnd.openxmlformats-package.relationships+xml'});child(content,CT,'Default',{'Extension':'xml','ContentType':'application/xml'})
     for part,ctype in [('workbook','sheet.main'),('styles','styles')]:
         child(content,CT,'Override',{'PartName':'/xl/'+part+'.xml','ContentType':'application/vnd.openxmlformats-officedocument.spreadsheetml.'+ctype+'+xml'})

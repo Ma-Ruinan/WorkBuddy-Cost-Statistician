@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 from common import DataError,assign_users,date_selected,in_scope,iso,number,segment,scene_parts,task_match
 from agent_tree import enrich
+from runtime_usage import RuntimeUsage, default_logs
 
 PRODUCT='WorkBuddy'
 METHOD='主会话按题目关联；通过Agent结果的subAgent标识递归读取子日志；模型请求与工具调用跨执行主体去重；不重复累计父摘要'
@@ -68,7 +69,7 @@ def tree_root(path):
 
 
 class WorkBuddyTree:
-    def __init__(self,source,tz,workspace=None,sessions=None):
+    def __init__(self,source,tz,workspace=None,sessions=None,runtime_logs=None):
         self.tz=tz;self.nodes={};self.rows={};self.graph=collections.defaultdict(list);self.times=collections.defaultdict(list)
         paths=[source,*sorted((source.parent/source.stem/'subagents').rglob('*.jsonl'))] if source.is_file() else sorted(source.rglob('*.jsonl'))
         if not paths:raise DataError('未找到会话JSONL：'+str(source))
@@ -144,6 +145,19 @@ class WorkBuddyTree:
                     self.graph[root].append(dict(child=None,time=self.nodes[node]['created'],call=None,
                         evidence=node+'#unlinked-subagent-file'))
         for values in self.graph.values():values.sort(key=lambda e:(e['time'],e.get('child') or ''))
+        self.runtime=RuntimeUsage(Path(runtime_logs) if runtime_logs else default_logs(source),tz)
+        recorded={}
+        for rows in self.rows.values():
+            for row in rows:
+                pd=row.get('providerData') or {}
+                if pd.get('usage') and pd.get('conversationRequestId') and pd.get('messageId'):
+                    recorded['WorkBuddy#request:'+pd['conversationRequestId']+'#message:'+pd['messageId']]=pd
+        for record in self.runtime.records:
+            if record['_identity'] in recorded:
+                original=usage_value(recorded[record['_identity']],record['evidence'])
+                if (original['input'],original['output'])!=(record['input'],record['output']):
+                    raise DataError('会话与运行日志的模型用量不一致：'+record['evidence'])
+                record['cache']=original['cache']
 
     def edges(self,node):return self.graph[node]
     def next_edge_time(self,node,at):return min((t for t in self.times[node] if t>at),default=float('inf'))
@@ -165,6 +179,14 @@ class WorkBuddyTree:
             value.update(_identity='WorkBuddy#request:'+key[0]+'#message:'+key[1],_time_ms=r['timestamp'],agent_session=info['session'])
             # Repeated appearances of a model response may be attached to multiple tool calls.
             if key not in usages:usages[key]=dict(raw=pd['usage'],value=value)
+        known={u['value']['_identity']:u['value'] for u in usages.values()}
+        for u in self.runtime.select(info['session'],start,until):
+            previous=known.get(u['_identity'])
+            if previous:
+                if (previous['input'],previous['output'])!=(u['input'],u['output']):
+                    raise DataError('会话与运行日志的模型用量不一致：'+u['evidence'])
+                continue
+            usages[('runtime',u['_identity'])]={'raw':{},'value':u}
         if finished and not usages:
             evidence=node+'#JSONL:'+str(finished[-1]['_line'])
             usages[('missing',evidence)]={'raw':{},'value':dict(input=None,output=None,cache=None,calls=None,model=None,
@@ -212,7 +234,7 @@ class WorkBuddyTree:
         return value
 
 def collect(source,tasks,args,mapping,tz):
-    store=WorkBuddyTree(source,tz,args.workspace,args.session);excluded=[];segments=[]
+    store=WorkBuddyTree(source,tz,args.workspace,args.session,getattr(args,'runtime_logs',None));excluded=[];segments=[]
     for node,info in store.nodes.items():
         if info['child']:continue
         if not in_scope(info['directory'],args.workspace) or (args.session and info['session'] not in args.session):continue
@@ -225,6 +247,19 @@ def collect(source,tasks,args,mapping,tz):
             if not date_selected(next(u['time'] for u in users if u['id']==root),args,tz):continue
             segments.append(store.piece(node,user['time'],until,task,root,kind,user['id']))
     enrich(segments,store,'WebSearch')
+    for s in segments:
+        sessions={e['session'] for e in s['agent_executions']}
+        end=s['end_ms'] or s['start_ms']
+        s['application_usage']=store.runtime.titles(sessions,s['start_ms'],end)
+        s['runtime_coverage']={'matched_calls':sum(u.get('cost_kind') is not None for u in s['usage_records']),
+            'chat_records_found':any(r['agent_session'] in sessions and s['start_ms']<=r['_time_ms']<=end
+                and r['cost_kind']=='chat' for r in store.runtime.records)}
+        if not s['runtime_coverage']['chat_records_found']:
+            s['warnings'].append('未找到本段运行用量日志；辅助模型成本可能未覆盖')
+        if any(any(sid in line for sid in sessions) for line,_ in store.runtime.issues):
+            s['warnings'].append('部分关联运行用量记录无法解析；成本覆盖不完整')
+        if any(u.get('cost_kind') and u['cache'] is None for u in s['usage_records']):
+            s['warnings'].append('辅助模型记录未提供缓存量，本次缓存命中率留空')
     included={e['node'] for s in segments for e in s['agent_executions']}
     for node,info in store.nodes.items():
         if info['child'] and node not in included:excluded.append(dict(session=info['session'],source=node,reason='未关联到所选父任务的子日志',time_ms=info['created']))

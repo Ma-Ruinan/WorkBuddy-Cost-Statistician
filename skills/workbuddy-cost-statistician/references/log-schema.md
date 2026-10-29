@@ -10,6 +10,10 @@
 
 累计输入直接使用 usage.inputTokens，其中已包含缓存，不能再次加缓存读取量；输出使用 usage.outputTokens；缓存读取量为 usage.inputTokensDetails 各项 cached_tokens 之和。存在 rawUsage 时与 prompt_tokens、completion_tokens、prompt_tokens_details.cached_tokens 交叉核对。
 
+应用运行日志的 qua.end JSON 以 conversation_request_id 和 message_id 去重，与会话记录交叉核对；重叠记录优先使用有缓存字段的会话用量。prompt_tokens 和 completion_tokens 是实际输入输出量。compress、webfetch 等通过 conversation_id 及执行窗口关联主/子任务，进入任务Token和完成调用数；失败请求如明确记录非零用量也保留成本，但不增加完成调用数。零用量中断不增加调用数。轮转日志中的重复请求只计一次。时间按所选时区解释，源日志只读。
+
+conversation_topic 使用独立会话ID，只有同一日志目录、日期和进程的chat记录唯一指向所选会话时才关联，计入application_usage，不参与任务九项指标。缓存字段未取得时不填零，受影响任务的缓存命中率保持缺失。成本核对表分别列任务执行、应用辅助和已记录合计；合计不代表日志缺失情况下的完整账单。
+
 工具调用为 function_call，结果为 function_call_result，按 callId 配对。外层 status=completed 仍可能有 providerData.toolResult.rawResponse.is_error=true、toolResult.isError=true 或 rawResponse.exitCode 非零，均计为工具错误。同一调用只计一次错误。缺少配对结果时工具错误总数保持缺失。
 
 模型失败重试尚未确认独立可靠字段，保持未记录。附带制作PPT等场景参数的任务，实际文件制作工作量属于本次条件，需要在报告中保留。

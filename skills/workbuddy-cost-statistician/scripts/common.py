@@ -258,6 +258,8 @@ def assemble(product, tasks, segments, excluded, args, tz):
         r['models'] = sorted({x for s in ss for x in s['models']})
         r['agent_executions'] = [x for s in ss for x in s.get('agent_executions', [])]
         r['agent_links'] = [x for s in ss for x in s.get('agent_links', [])]
+        r['application_usage'] = list({u['_identity']:u for s in ss for u in s.get('application_usage',[])}.values())
+        r['runtime_coverage'] = [s['runtime_coverage'] for s in ss if 'runtime_coverage' in s]
         r['agent_coverage'] = {'complete': all(s.get('agent_coverage', {}).get('complete', True) for s in ss),
             'issues': [x for s in ss for x in s.get('agent_coverage', {}).get('issues', [])],
             'child_sessions': sorted({x for s in ss for x in s.get('agent_coverage', {}).get('child_sessions', [])})}
@@ -324,6 +326,7 @@ def run_cli(product, collector, source_default, method):
     parser.add_argument('--workspace', action='append', required=True, help='工作目录或批次父目录，可多次给出')
     parser.add_argument('--db', help='显式指定SQLite源，仅数据库型采集器使用')
     parser.add_argument('--logs-root', help='显式指定会话JSONL根目录')
+    parser.add_argument('--runtime-logs', help='应用运行日志目录或文件，默认发现.workbuddy/logs')
     parser.add_argument('--session', action='append', default=[], help='限定会话ID，可多次给出')
     parser.add_argument('--date', help='仅保留该时区中此日期开始的独立测试，默认不按日期截断')
     parser.add_argument('--timezone', default='Asia/Shanghai')
