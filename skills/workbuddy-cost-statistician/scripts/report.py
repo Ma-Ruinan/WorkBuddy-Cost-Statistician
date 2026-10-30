@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import xml.etree.ElementTree as E
 from zipfile import ZipFile, ZIP_DEFLATED
-from common import METRICS, LABELS, UNITS, load, timezone, sum_known
+from common import METRICS, LABELS, UNITS, load, timezone, sum_known, task_source
 
 S = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
@@ -201,6 +201,27 @@ def excel_report(data,path):
                 value((inp+out)/10000 if inp is not None and out is not None else None,4)])
     cost_rows.append(['仅汇总取得的用量；日志缺失见过程报告。会话标题成本不参与任务九项指标均值。'])
     sheets.append(('成本核对',cost_rows,[30,42,15,24,24,24],1,None))
+    sources={t['id']:task_source(t) for t in data['tasks']}
+    def shift_reference(match):
+        letters=match.group(2);number=0
+        for ch in letters: number=number*26+ord(ch)-64
+        return match.group(1)+col(number+1)+match.group(3)
+    adjusted=[]
+    for name,rows,widths,freeze,autofilter in sheets:
+        if name in ('任务均值','逐次记录','执行分段','Agent明细'):
+            index=0 if name=='任务均值' else 1
+            header=5 if name=='任务均值' else 0
+            for i,row in enumerate(rows):
+                if i==header: row.insert(index,value('题目来源',1))
+                elif i>header and len(row)>1:
+                    task_id=row[index]
+                    row.insert(index,sources.get(task_id) if isinstance(task_id,str) else None)
+                for cell in row:
+                    if isinstance(cell,dict) and cell.get('f'):
+                        cell['f']=re.sub(r'(\$?)([A-Z]+)(\$?\d+)',shift_reference,cell['f'])
+            widths=list(widths);widths.insert(index,20)
+        adjusted.append((name,rows,widths,freeze,autofilter))
+    sheets=adjusted
     content=el(CT,'Types');child(content,CT,'Default',{'Extension':'rels','ContentType':'application/vnd.openxmlformats-package.relationships+xml'});child(content,CT,'Default',{'Extension':'xml','ContentType':'application/xml'})
     for part,ctype in [('workbook','sheet.main'),('styles','styles')]:
         child(content,CT,'Override',{'PartName':'/xl/'+part+'.xml','ContentType':'application/vnd.openxmlformats-officedocument.spreadsheetml.'+ctype+'+xml'})
@@ -211,7 +232,7 @@ def excel_report(data,path):
             child(sh,S,'sheet',{'name':name,'sheetId':str(i),'{'+R+'}id':f'rId{i}'})
             child(content,CT,'Override',{'PartName':f'/xl/worksheets/sheet{i}.xml','ContentType':'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml'})
             rels.append((f'rId{i}','worksheet',f'worksheets/sheet{i}.xml'))
-            merges=([f'A{j}:L{j}' for j,row in enumerate(rows,1) if row and len(row)==1] if name=='任务均值' else ['A1:C1'] if name=='口径与来源' else [])
+            merges=([f'A{j}:M{j}' for j,row in enumerate(rows,1) if row and len(row)==1] if name=='任务均值' else ['A1:C1'] if name=='口径与来源' else [])
             z.writestr(f'xl/worksheets/sheet{i}.xml',worksheet(rows,widths,freeze,autofilter,merges))
         child(workbook,S,'calcPr',{'calcId':'191029','fullCalcOnLoad':'1'})
         rels.append(('rStyles','styles','styles.xml'))
